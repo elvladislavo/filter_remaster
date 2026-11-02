@@ -47,7 +47,7 @@ body{
   font-variant-numeric:tabular-nums;
   touch-action:manipulation;
 }
-#stage{position:fixed;inset:0;background:var(--ink);overflow:hidden}
+#stage{position:fixed;top:0;right:0;bottom:0;left:0;background:var(--ink);overflow:hidden}
 #gl{display:block;width:100%;height:100%;touch-action:none}
 
 #vid{position:absolute;width:2px;height:2px;opacity:.001;pointer-events:none;left:0;top:0}
@@ -110,7 +110,7 @@ button[aria-pressed=true]{border-color:var(--lime);color:var(--bone);background:
 
 /* hero / start gate */
 #gate{
-  position:absolute;inset:0;z-index:20;display:flex;flex-direction:column;
+  position:absolute;top:0;right:0;bottom:0;left:0;z-index:20;display:flex;flex-direction:column;
   align-items:center;justify-content:center;gap:18px;padding:24px;text-align:center;
   overflow:auto;
   background:
@@ -172,7 +172,7 @@ button[aria-pressed=true]{border-color:var(--lime);color:var(--bone);background:
   width:28px;height:28px;border-radius:4px;background:var(--red);
 }
 #shutterFlash{
-  position:absolute;inset:0;z-index:8;background:var(--bone);opacity:0;
+  position:absolute;top:0;right:0;bottom:0;left:0;z-index:8;background:var(--bone);opacity:0;
   pointer-events:none;transition:opacity .25s ease;
 }
 #shutterFlash.on{opacity:.8;transition:none}
@@ -278,7 +278,7 @@ input[type=range]:active::-webkit-slider-thumb{background:var(--lime)}
 #sheetHandle span{width:38px;height:4px;border-radius:2px;background:rgba(239,234,225,.22);display:block}
 #sheetHandle:active span{background:rgba(239,234,225,.40)}
 #scrim{
-  position:fixed;inset:0;z-index:11;background:var(--scrim);
+  position:fixed;top:0;right:0;bottom:0;left:0;z-index:11;background:var(--scrim);
   backdrop-filter:blur(2px);-webkit-backdrop-filter:blur(2px);
 }
 #scrim[hidden]{display:none}
@@ -395,7 +395,7 @@ h2{
 #nocam p{margin:0;color:var(--muted);font-size:12px}
 #nocam .acts{display:flex;gap:6px;justify-content:center;flex-wrap:wrap}
 #nocamCam{border-color:var(--red);background:var(--red-wash)}
-#fail{display:none;position:absolute;inset:0;z-index:30;align-items:center;justify-content:center;padding:28px;text-align:center}
+#fail{display:none;position:absolute;top:0;right:0;bottom:0;left:0;z-index:30;align-items:center;justify-content:center;padding:28px;text-align:center}
 @media (max-height:520px) and (max-width:859px){
   #console{max-height:62vh}
   #gate{gap:10px;padding:14px}
@@ -411,6 +411,15 @@ h2{
      becomes a row under the top bar, clear of the filters */
   #rail{flex-direction:row;top:calc(52px + env(safe-area-inset-top));transform:none}
   #coach ol li{margin:0 0 5px}
+}
+/* Safari before 14.1 ignores gap in flex rows: space the main controls by margin instead */
+@supports not (aspect-ratio: 1 / 1){
+  #rail > * + *{margin-top:6px}
+  #hud > * + *, #modes > * + *, #nocam .acts > * + *{margin-left:6px}
+  #strip > * + *{margin-left:6px}
+  #gate > * + *{margin-top:14px}
+  #acts > *, .grid2 > *, .grid5 > *, #toast > *, #coach .acts > *{margin:3px}
+  .row > * + *{margin-left:8px}
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
 @media (min-width:860px){
@@ -782,11 +791,17 @@ LANG = (langChoice !== 'auto' && LANG_NAMES[langChoice]) ? langChoice : deviceLa
    context
    ============================================================ */
 var canvas = document.getElementById('gl');
-var gl = canvas.getContext('webgl2', {
+var GL_OPTS = {
   alpha:false, depth:false, stencil:false, antialias:false,
   premultipliedAlpha:false, preserveDrawingBuffer:false,
   powerPreference:'high-performance', desynchronized:true
-});
+};
+var gl = canvas.getContext('webgl2', GL_OPTS);
+/* Safari before iOS 15 (every iPhone that stops at iOS 12, like the 5s and 6)
+   only has WebGL1. The shaders are written in the subset both understand,
+   and prepShader() below turns them into WebGL1's dialect. */
+var GL2 = !!gl;
+if(!gl) gl = canvas.getContext('webgl', GL_OPTS) || canvas.getContext('experimental-webgl', GL_OPTS);
 if(!gl){ document.getElementById('fail').style.display='flex'; document.getElementById('gate').style.display='none'; return; }
 
 /* A page cannot grant itself permissions, so this only remembers that the person
@@ -825,14 +840,19 @@ var IS_MOBILE = IS_IOS || IS_ANDROID;
 /* ============================================================
    shaders
    ============================================================ */
-var VERT = `#version 300 es
-precision highp float;
-out vec2 vUv;
+var VERT = (GL2 ? '#version 300 es\nin vec2 aPos;\nout vec2 vUv;\n' : 'attribute vec2 aPos;\nvarying vec2 vUv;\n') + `
 void main(){
-  vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
-  vUv = p;
-  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+  vUv = aPos;
+  gl_Position = vec4(aPos * 2.0 - 1.0, 0.0, 1.0);
 }`;
+/* fragment shaders are written for WebGL2; for WebGL1 the few words that
+   differ are swapped. Nothing else in them is WebGL2-only. */
+function prepShader(src){
+  if(GL2) return src;
+  return src.replace('#version 300 es\n', '')
+            .replace(/in vec2 vUv;\s*out vec4 fragColor;/, 'varying vec2 vUv;\n#define fragColor gl_FragColor')
+            .replace(/\btexture\(/g, 'texture2D(');
+}
 
 var COMMON = `
 float hash11(float p){ p = fract(p * 0.1031); p *= p + 33.33; p *= p + p; return fract(p); }
@@ -958,7 +978,10 @@ uniform sampler2D uAcc;
 uniform sampler2D uMotion;
 uniform sampler2D uRef;
 uniform sampler2D uPrev;          // the previous camera frame
-uniform highp sampler2DArray uHist; // Strata: a ring of past frames
+uniform sampler2D uHist;          // Strata: 24 past frames tiled 6 x 4 in one texture
+uniform vec2  uHistPad;
+uniform vec2  uMotionSize;        // size of the motion field, in blocks
+uniform vec2  uAccSize;           // size of the accumulator, in px
 uniform float uHistHead, uHistStep;
 uniform vec2  uTexel;
 uniform vec2  uResolution;
@@ -1028,6 +1051,12 @@ vec3 warpLook(vec3 cur){
 
   return clamp(mix(cam, prev, uPersistence * 0.93), 0.0, 1.0);
 }
+/* one past frame from the Strata ring, which is tiled 6 across, 4 down */
+vec3 histAt(float layer){
+  float row = floor((layer + 0.5) / 6.0), col = layer - row * 6.0;
+  vec2 inner = clamp(vUv, uHistPad, 1.0 - uHistPad);
+  return texture(uHist, (vec2(col, row) + inner) / vec2(6.0, 4.0)).rgb;
+}
 /* Burst: blocks and lines torn sideways, re-rolled many times a second */
 vec2 burstTear(){
   vec2 rb = hash22(floor(vUv * uResolution / max(uBlock, 4.0)) + floor(uTime * 18.0) * 7.13);
@@ -1060,9 +1089,9 @@ void main(){
     vec3 c = mix(cur, texture(uRef, vUv).rgb, uFrozen);
     vec2 px = vUv * uResolution;
     float B = max(uBlock, 4.0);
-    ivec2 ms = textureSize(uMotion, 0);
+    vec2 ms = uMotionSize;
     vec2 cell = floor(px / B);
-    vec4 mc = texelFetch(uMotion, clamp(ivec2(cell), ivec2(0), ms - 1), 0);
+    vec4 mc = texture(uMotion, (clamp(cell, vec2(0.0), ms - 1.0) + 0.5) / ms);
     float intra = step(max(uThreshold, 0.02) * 2.0, mc.b);
     vec2 f = px - cell * B;
     float edge = step(min(min(f.x, f.y), min(B - f.x, B - f.y)), 0.75);
@@ -1071,7 +1100,7 @@ void main(){
     float ink = 0.0;
     for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++){
       vec2 n = cell + vec2(float(i), float(j));
-      vec4 mn = texelFetch(uMotion, clamp(ivec2(n), ivec2(0), ms - 1), 0);
+      vec4 mn = texture(uMotion, (clamp(n, vec2(0.0), ms - 1.0) + 0.5) / ms);
       vec2 v = -(mn.rg - 0.5) * 2.0 * uSearch * uMotionScale;   // where the block went, px
       float lv = length(v);
       if (lv < 0.75 || mn.b < 0.012) continue;   // skipped block: nothing to draw
@@ -1114,7 +1143,7 @@ void main(){
   if (md > 23.5 && md < 24.5){
     float yb = (1.0 - vUv.y) * 6.0, band = floor(yb);
     vec3 c = band < 0.5 ? mix(cur, texture(uRef, vUv).rgb, uFrozen)
-           : texture(uHist, vec3(vUv, mod(uHistHead - band * uHistStep + 96.0, 24.0))).rgb;
+           : histAt(mod(uHistHead - band * uHistStep + 96.0, 24.0));
     if (band > 0.5 && fract(yb) * uResolution.y / 6.0 < 1.0) c = vec3(0.04);
     fragColor = vec4(c, 1.0); return;
   }
@@ -1179,7 +1208,7 @@ void main(){
     float run = 1.0 - uFrozen;
 
     /* stylus: smoothed motion, so a hand pulls a ribbon rather than blocks */
-    vec2 ms = 2.0 / vec2(textureSize(uMotion, 0));
+    vec2 ms = 2.0 / uMotionSize;
     vec4 m = (texture(uMotion, vUv)
        + texture(uMotion, vUv + vec2(ms.x, 0.0)) + texture(uMotion, vUv - vec2(ms.x, 0.0))
        + texture(uMotion, vUv + vec2(0.0, ms.y)) + texture(uMotion, vUv - vec2(0.0, ms.y))) * 0.2;
@@ -1241,7 +1270,7 @@ void main(){
       /* ghost: the room sinks to a dim, cold monochrome you can still read;
          whatever moves shows in full colour and leaves a fading trail. The
          movement mask is widened so whole shapes light up, not just edges */
-      vec2 ms = 1.0 / vec2(textureSize(uMotion, 0));
+      vec2 ms = 1.0 / uMotionSize;
       float mv = max(max(texture(uMotion, vUv).b,
                          max(texture(uMotion, vUv + vec2(ms.x, 0.0)).b, texture(uMotion, vUv - vec2(ms.x, 0.0)).b)),
                      max(texture(uMotion, vUv + vec2(0.0, ms.y)).b, texture(uMotion, vUv - vec2(0.0, ms.y)).b));
@@ -1251,7 +1280,7 @@ void main(){
     } else if (md < 14.5){
       /* drip: light falls, each pixel taking the brighter of itself and what
          was just above it, so bright things run down in streaks */
-      float ts = float(textureSize(uAcc, 0).y);
+      float ts = uAccSize.y;
       vec3 above = texture(uAcc, vUv + vec2(0.0, 1.5 * (1.0 + uMotionScale) / ts)).rgb * mix(0.95, 0.995, uPersistence);
       c = vec4(mix(cur, above, step(0.3, luma(above)) * step(luma(cur) + 0.03, luma(above))), 1.0);
     } else {
@@ -1268,7 +1297,7 @@ void main(){
      camera is written at the right edge, so time runs across the frame.
      Drag distance sets the speed; Freeze stops the scroll. */
   if (md > 9.5){
-    float st = (1.0 + uMotionScale * 1.5) / float(textureSize(uAcc, 0).x) * (1.0 - uFrozen);
+    float st = (1.0 + uMotionScale * 1.5) / uAccSize.x * (1.0 - uFrozen);
     vec3 c = vUv.x > 1.0 - max(st, 1e-4) ? texture(uSrc, vec2(0.5, vUv.y)).rgb
                                          : texture(uAcc, vUv + vec2(st, 0.0)).rgb;
     /* after a clear the buffer is black: show the live picture until the scan arrives */
@@ -1280,7 +1309,7 @@ void main(){
   /* fluid: average the vector field so the flow turns liquid */
   vec4 m;
   if (md > 2.5 && md < 3.5){
-    vec2 ms = (1.0 + uChaos * 2.0) / vec2(textureSize(uMotion, 0));
+    vec2 ms = (1.0 + uChaos * 2.0) / uMotionSize;
     m = (texture(uMotion, vUv)
        + texture(uMotion, vUv + vec2(ms.x, 0.0)) + texture(uMotion, vUv - vec2(ms.x, 0.0))
        + texture(uMotion, vUv + vec2(0.0, ms.y)) + texture(uMotion, vUv - vec2(0.0, ms.y))) * 0.2;
@@ -1526,7 +1555,8 @@ function compile(type, src){
 function makeProgram(fsSrc, vsSrc){
   var p = gl.createProgram();
   gl.attachShader(p, compile(gl.VERTEX_SHADER, vsSrc || VERT));
-  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, prepShader(fsSrc)));
+  gl.bindAttribLocation(p, 0, 'aPos');
   gl.linkProgram(p);
   if(!gl.getProgramParameter(p, gl.LINK_STATUS)){
     console.error(gl.getProgramInfoLog(p));
@@ -1542,7 +1572,7 @@ function makeProgram(fsSrc, vsSrc){
 function makeTex(w, h){
   var t = gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D, t);
-  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+  gl.texImage2D(gl.TEXTURE_2D, 0, GL2 ? gl.RGBA8 : gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
   gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -1570,7 +1600,7 @@ function run(prog, vals, prim, count){
     var v = vals[k];
     if(v && v.__tex){
       gl.activeTexture(gl.TEXTURE0 + unit);
-      gl.bindTexture(v.__arr ? gl.TEXTURE_2D_ARRAY : gl.TEXTURE_2D, v.tex);
+      gl.bindTexture(gl.TEXTURE_2D, v.tex);
       gl.uniform1i(loc, unit); unit++;
     } else if(v && v.v4){ gl.uniform4fv(loc, v.v4); }
       else if(v && v.length === 2){ gl.uniform2f(loc, v[0], v[1]); }
@@ -1581,8 +1611,12 @@ function run(prog, vals, prim, count){
   gl.drawArrays(prim === undefined ? gl.TRIANGLES : prim, 0, count || 3);
 }
 
-var vao = gl.createVertexArray();
-gl.bindVertexArray(vao);
+/* one triangle that covers the screen; every pass draws it */
+var quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([0, 0, 2, 0, 0, 2]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
 gl.disable(gl.DEPTH_TEST);
 gl.disable(gl.BLEND);
 
@@ -1813,7 +1847,7 @@ SPEC.forEach(function(group){
    ============================================================ */
 var T = {src:null, prev:null, ref:null, accA:null, accB:null, motion:null, mref:null};
 /* state for the filters that need more than the accumulator */
-var hist = null, histFbo = null, histHead = 0, histSeed = true, histLast = 0; // Strata
+var hist = null, histHead = 0, histSeed = true, histLast = 0; // Strata
 var vecHoldPending = true;
 var RW = 0, RH = 0;
 var maxDim = 720;
@@ -1844,31 +1878,22 @@ function resize(){
 }
 
 
-/* Strata keeps 24 half-size past frames in one array texture */
-function histTexture(w, h, n){
-  var tex = gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D_ARRAY, tex);
-  gl.texStorage3D(gl.TEXTURE_2D_ARRAY, 1, gl.RGBA8, w, h, n);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-  return { __tex:true, __arr:true, tex:tex, w:w, h:h };
-}
-/* the shader always declares the sampler, so it always needs a texture of the right kind */
-var histDummy = histTexture(1, 1, 1);
+/* Strata keeps 24 past frames as tiles of one ordinary texture, 6 across and
+   4 down, so it works on WebGL1 too. Tiles are half size, smaller if the
+   whole sheet would pass the 4096 px most phones allow. */
+var histDummy = makeTarget(1, 1);
 function histEnsure(){
-  var w = Math.max(2, RW >> 1), h = Math.max(2, RH >> 1);
-  if(hist && hist.w === w && hist.h === h) return;
-  if(hist) gl.deleteTexture(hist.tex);
-  hist = histTexture(w, h, 24);
-  if(!histFbo) histFbo = gl.createFramebuffer();
+  var k = Math.min(0.5, 4000 / (6 * RW), 4000 / (4 * RH));
+  var w = Math.max(2, Math.floor(RW * k)), h = Math.max(2, Math.floor(RH * k));
+  if(hist && hist.tw === w && hist.th === h) return;
+  freeTarget(hist);
+  hist = makeTarget(w * 6, h * 4);
+  hist.tw = w; hist.th = h;
   histSeed = true;
 }
 function histWrite(layer){
-  gl.bindFramebuffer(gl.FRAMEBUFFER, histFbo);
-  gl.framebufferTextureLayer(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, hist.tex, 0, layer);
-  gl.viewport(0, 0, hist.w, hist.h);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, hist.fbo);
+  gl.viewport((layer % 6) * hist.tw, Math.floor(layer / 6) * hist.th, hist.tw, hist.th);
   run(pCopy, { uTex: T.src });
 }
 
@@ -2003,6 +2028,13 @@ setText(document.getElementById('mirrorVal'), 'off');
     if(Object.keys(pts).length === 2 && start > 0) setZoom(from * spread() / start); });
   function up(e){ delete pts[e.pointerId]; start = 0; }
   el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+  if(!window.PointerEvent){
+    var tStart = 0, tFrom = 1;
+    var tDist = function(t){ return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY); };
+    el.addEventListener('touchstart', function(e){ if(e.touches.length === 2){ tStart = tDist(e.touches); tFrom = zoom; } }, { passive:true });
+    el.addEventListener('touchmove', function(e){ if(e.touches.length === 2 && tStart > 0){ e.preventDefault(); setZoom(tFrom * tDist(e.touches) / tStart); } }, { passive:false });
+    el.addEventListener('touchend', function(e){ if(e.touches.length < 2) tStart = 0; });
+  }
   el.addEventListener('wheel', function(e){ e.preventDefault(); setZoom(zoom * Math.exp(-e.deltaY * 0.002)); }, { passive:false });
 })();
 btnLamp.addEventListener('click', torchToggle);
@@ -2168,7 +2200,7 @@ mirrorIn.addEventListener('input', function(){
   setText(document.getElementById('mirrorVal'), P.mirror ? 'on' : 'off');
 });
 var quality = document.getElementById('quality');
-quality.value = IS_MOBILE ? 720 : 1080;
+quality.value = !GL2 ? 480 : IS_MOBILE ? 720 : 1080;   /* WebGL1 means an older phone */
 document.getElementById('qualityVal').textContent = quality.value;
 maxDim = parseInt(quality.value, 10);
 quality.addEventListener('input', function(){
@@ -3057,7 +3089,10 @@ function frame(){
     uSoften: P.soften,
     uDt: dt,
     uPrev: T.prev,
-    uHist: hist || histDummy, uHistHead: histHead, uHistStep: 4
+    uHist: hist || histDummy, uHistHead: histHead, uHistStep: 4,
+    uHistPad: hist ? [0.5 / hist.tw, 0.5 / hist.th] : [0, 0],
+    uMotionSize: [(bloom ? T.mref : T.motion).w, (bloom ? T.mref : T.motion).h],
+    uAccSize: [RW, RH]
   });
 
   /* 3 — effect chain to screen */
@@ -3195,7 +3230,8 @@ applyLang();
 resize();
 syncPlay();
 setPressed();
-setCapMode('video');
+/* iOS before 14.3 has no MediaRecorder: open on PHOTO, which always works */
+setCapMode(window.MediaRecorder ? 'video' : 'photo');
 requestAnimationFrame(frame);
 
 })();
