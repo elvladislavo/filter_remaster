@@ -1878,6 +1878,7 @@ function resize(){
   ['src','prev','ref','accA','accB'].forEach(function(k){ freeTarget(T[k]); T[k] = makeTarget(w, h); });
   T.motion = null; T.mref = null; sizeMotionTarget();
   dropStages();
+  shownAcc = null;
   clearBuffers();
 }
 
@@ -2092,7 +2093,9 @@ function syncNocam(){
   var g = document.getElementById('gate'), c = document.getElementById('coach');
   n.hidden = !(mode === 'demo' && g && g.style.display === 'none' && c && c.hidden);
 }
+var srcEpoch = 0;   // bumped whenever the picture comes from somewhere new
 function useDemo(){
+  srcEpoch++;
   stopStream(); releaseUrl();
   video.removeAttribute('src'); video.srcObject = null; video.load();
   mode = 'demo'; setText(elName, 'no camera');
@@ -2100,6 +2103,7 @@ function useDemo(){
   setPressed(); clearBuffers();
 }
 function useFile(file){
+  srcEpoch++;
   stopStream(); releaseUrl();
   objectUrl = URL.createObjectURL(file);
   video.srcObject = null;
@@ -2128,6 +2132,7 @@ function useCamera(){
     video:{ facingMode:{ ideal:facing }, width:{ideal:1280}, height:{ideal:720} }
   }).then(function(s){
     stream = s;
+    srcEpoch++;
     var track = s.getVideoTracks()[0];
     /* some devices only report the lamp once the track has settled */
     if(!torchDetect(track)) setTimeout(function(){ if(stream === s) torchDetect(track); }, 700);
@@ -3011,7 +3016,9 @@ if(prefs.cam){
 /* ============================================================
    loop
    ============================================================ */
-var t0 = performance.now(), tPrev = 0, wasLive = false;
+var t0 = performance.now(), tPrev = 0, clearedFor = -1;
+var vLastTime = -1, tProc = 0, shownAcc = null;
+var VIDEO_MAX = 1280, shrinkCv = null, shrinkCx = null;
 var lastAuto = 0, autoState = false;
 var frames = 0, fpsAt = performance.now(), fps = 0;
 var contextLost = false;
@@ -3104,21 +3111,51 @@ function frame(){
   var usingVideo = (mode !== 'demo');
   var ready = usingVideo && video.readyState >= 2 && video.videoWidth > 0;
 
-  if(ready){
+  /* A playing video file changes about 30 times a second while the screen
+     redraws 60 or more. Running the filters on a repeated frame doubles the
+     work and shows them no movement at all, which starves every motion
+     filter in a stack. So a file is only processed when it has a new frame;
+     the camera, a paused file and no camera are processed every time. */
+  var newFrame = true;
+  if(ready && mode === 'file' && !video.paused){
+    newFrame = video.currentTime !== vLastTime;
+  }
+  if(!shownAcc) newFrame = true;      // nothing to show yet, or the buffers were remade
+  if(ready) vLastTime = video.currentTime;
+  var dtP = Math.min(0.25, Math.max(0.001, t - tProc));
+  if(newFrame) tProc = t;
+
+  if(ready && newFrame){
+    /* gallery videos are often 1080p or 4K: shrink them to the size the live
+       camera gives before they reach the GPU, or uploading every frame and
+       running a stack of filters on it leaves the frames too far apart for
+       the motion to be found */
+    var upload = video, vw = video.videoWidth, vh = video.videoHeight;
+    if(mode === 'file' && Math.max(vw, vh) > VIDEO_MAX){
+      var vk = VIDEO_MAX / Math.max(vw, vh), cw = Math.round(vw * vk), ch = Math.round(vh * vk);
+      if(!shrinkCv){ shrinkCv = document.createElement('canvas'); shrinkCx = shrinkCv.getContext('2d'); }
+      if(shrinkCv.width !== cw || shrinkCv.height !== ch){ shrinkCv.width = cw; shrinkCv.height = ch; }
+      try { shrinkCx.drawImage(video, 0, 0, cw, ch); upload = shrinkCv; } catch(err){ upload = video; }
+    }
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, videoTex);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
-    try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video); } catch(err){}
+    try { gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, upload); } catch(err){}
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
   }
+
+  var dstAcc = shownAcc;
+  if(newFrame){
 
   /* 0 — source. A camera that is switching or still starting has no frame
      yet: hold the last one rather than feed the filters something else, and
      clear the trails once the new picture arrives so nothing from before it
      lingers on top */
-  var live = usingVideo && ready;
-  if(live && !wasLive) clearBuffers();
-  wasLive = live;
+  /* only a new source wipes the trails. A video file also stops having a
+     frame for a moment when it loops, seeks or stalls while decoding; that
+     holds the last frame and keeps everything built up, or a stack of
+     filters could never grow on a video */
+  if(usingVideo && ready && clearedFor !== srcEpoch){ clearBuffers(); clearedFor = srcEpoch; }
   if(!usingVideo || ready){
   bindTarget(T.src);
   run(pSource, {
@@ -3164,7 +3201,7 @@ function frame(){
   }
 
   /* 2 — the trace: one pass per motion filter in the stack */
-  var input = T.src, dstAcc = null;
+  var input = T.src;
   for(var k = 0; k < stagePrms.length; k++){
     var prm = stagePrms[k], sm = prm.moshOn ? parseFloat(prm.moshMode) : -1;
     var sA, sB, sRef, sPrev;
@@ -3182,10 +3219,12 @@ function frame(){
       sRef = S.ref; sPrev = S.prevIn;
     }
     if(sm === 24) histStep(input, prm, t);
-    runStage(prm, sm, input, sA, sB, sRef, sPrev, t, dt);
+    runStage(prm, sm, input, sA, sB, sRef, sPrev, t, dtP);
     if(k > 0) copyInto(STAGES[k - 1].prevIn, input);
     input = sB; dstAcc = sB;
   }
+  shownAcc = dstAcc;
+  }   /* end of: only on a new frame */
 
   /* 3 — effect chain to screen */
   bindTarget(null);
@@ -3240,7 +3279,7 @@ function frame(){
   }
 
   /* 4 — current frame becomes the reference for the next motion pass */
-  copyInto(T.prev, T.src);
+  if(newFrame) copyInto(T.prev, T.src);
   gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
   /* readouts */
