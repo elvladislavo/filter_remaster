@@ -2092,7 +2092,9 @@ function syncNocam(){
   var g = document.getElementById('gate'), c = document.getElementById('coach');
   n.hidden = !(mode === 'demo' && g && g.style.display === 'none' && c && c.hidden);
 }
+var srcEpoch = 0;   // bumped whenever the picture comes from somewhere new
 function useDemo(){
+  srcEpoch++;
   stopStream(); releaseUrl();
   video.removeAttribute('src'); video.srcObject = null; video.load();
   mode = 'demo'; setText(elName, 'no camera');
@@ -2100,6 +2102,7 @@ function useDemo(){
   setPressed(); clearBuffers();
 }
 function useFile(file){
+  srcEpoch++;
   stopStream(); releaseUrl();
   objectUrl = URL.createObjectURL(file);
   video.srcObject = null;
@@ -2128,6 +2131,7 @@ function useCamera(){
     video:{ facingMode:{ ideal:facing }, width:{ideal:1280}, height:{ideal:720} }
   }).then(function(s){
     stream = s;
+    srcEpoch++;
     var track = s.getVideoTracks()[0];
     /* some devices only report the lamp once the track has settled */
     if(!torchDetect(track)) setTimeout(function(){ if(stream === s) torchDetect(track); }, 700);
@@ -3011,7 +3015,7 @@ if(prefs.cam){
 /* ============================================================
    loop
    ============================================================ */
-var t0 = performance.now(), tPrev = 0, wasLive = false;
+var t0 = performance.now(), tPrev = 0, clearedFor = -1;
 var lastAuto = 0, autoState = false;
 var frames = 0, fpsAt = performance.now(), fps = 0;
 var contextLost = false;
@@ -3116,9 +3120,11 @@ function frame(){
      yet: hold the last one rather than feed the filters something else, and
      clear the trails once the new picture arrives so nothing from before it
      lingers on top */
-  var live = usingVideo && ready;
-  if(live && !wasLive) clearBuffers();
-  wasLive = live;
+  /* only a new source wipes the trails. A video file also stops having a
+     frame for a moment when it loops, seeks or stalls while decoding; that
+     holds the last frame and keeps everything built up, or a stack of
+     filters could never grow on a video */
+  if(usingVideo && ready && clearedFor !== srcEpoch){ clearBuffers(); clearedFor = srcEpoch; }
   if(!usingVideo || ready){
   bindTarget(T.src);
   run(pSource, {
